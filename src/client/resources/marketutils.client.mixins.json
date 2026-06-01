@@ -3,7 +3,8 @@
 	"package": "com.marketutils.client.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
-		"ExampleClientMixin"
+		"ExampleClientMixin",
+		"AbstractContainerScreenMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1
