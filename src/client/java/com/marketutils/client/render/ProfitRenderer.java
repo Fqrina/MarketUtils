@@ -61,10 +61,16 @@ public final class ProfitRenderer {
 
         for (Component componentLine : tooltipLines) {
             String plainText = PriceParser.stripFormatting(componentLine.getString());
-            if (plainText.contains("Buy-It-Now:") || plainText.contains("BIN Price:") || plainText.contains("Buy it now:")) {
-                parsedPrice = PriceParser.parsePrice(plainText.substring(plainText.indexOf(":") + 1));
-            } else if (plainText.contains("Estimated Item Value:") || plainText.contains("Estimated Value:")) {
-                estimatedValue = PriceParser.parsePrice(plainText.substring(plainText.indexOf(":") + 1));
+            String lowerLine = plainText.toLowerCase();
+
+            int colonIndex = plainText.indexOf(":");
+            if (colonIndex != -1) {
+                String valuePart = plainText.substring(colonIndex + 1);
+                if (lowerLine.contains("buy it now:") || lowerLine.contains("buy-it-now:") || lowerLine.contains("bin price:") || lowerLine.contains("bin:") || lowerLine.contains("starting bid:") || lowerLine.contains("current bid:")) {
+                    parsedPrice = PriceParser.parsePrice(valuePart);
+                } else if (lowerLine.contains("estimated item value:") || lowerLine.contains("estimated value:")) {
+                    estimatedValue = PriceParser.parsePrice(valuePart);
+                }
             }
         }
 
@@ -93,5 +99,36 @@ public final class ProfitRenderer {
             // Safe vibrant red: alpha, red=180, green=0, blue=0
             return (alphaValue << 24) | (180 << 16) | (0 << 8) | 0;
         }
+    }
+
+    public static void appendWorthDebugText(ItemStack stack, List<Component> lines) {
+        if (stack == null || stack.isEmpty() || lines == null) {
+            return;
+        }
+
+        ItemProfitInfo info = PROFIT_CACHE.computeIfAbsent(stack, ProfitRenderer::evaluateItemProfit);
+        if (info.price() > 0L && info.estimatedValue() > 0L) {
+            long delta = info.estimatedValue() - info.price();
+            if (delta > 0L) {
+                lines.add(Component.literal("§aWorth it! Profit: +" + formatNumber(delta) + " coins"));
+            } else if (delta < 0L) {
+                lines.add(Component.literal("§cNot worth it! Loss: -" + formatNumber(Math.abs(delta)) + " coins"));
+            } else {
+                lines.add(Component.literal("§eNeutral! Value matches Price"));
+            }
+        }
+    }
+
+    private static String formatNumber(long number) {
+        if (number >= 1_000_000_000L) {
+            return String.format("%.2fB", number / 1_000_000_000.0);
+        }
+        if (number >= 1_000_000L) {
+            return String.format("%.2fM", number / 1_000_000.0);
+        }
+        if (number >= 1_000L) {
+            return String.format("%.1fK", number / 1_000.0);
+        }
+        return String.valueOf(number);
     }
 }
