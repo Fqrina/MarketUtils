@@ -20,6 +20,8 @@ public final class ProfitRenderer {
     private static final int MINIMUM_ALPHA_TINT = 30;
     private static final int MAXIMUM_ALPHA_TINT = 85;
 
+    private static final ThreadLocal<Boolean> EVALUATING_GUARD = ThreadLocal.withInitial(() -> false);
+
     private record ItemProfitInfo(long price, long estimatedValue, int tintColor) {}
 
     private ProfitRenderer() {
@@ -45,43 +47,53 @@ public final class ProfitRenderer {
     }
 
     private static ItemProfitInfo evaluateItemProfit(ItemStack stack) {
-        Minecraft minecraftInstance = Minecraft.getInstance();
-        if (minecraftInstance.level == null || minecraftInstance.player == null) {
+        if (EVALUATING_GUARD.get()) {
+            // Return dummy to break infinite recursion loop
             return new ItemProfitInfo(0L, 0L, 0);
         }
 
-        List<Component> tooltipLines = stack.getTooltipLines(
-                Item.TooltipContext.of(minecraftInstance.level),
-                minecraftInstance.player,
-                TooltipFlag.Default.NORMAL
-        );
+        EVALUATING_GUARD.set(true);
+        try {
+            Minecraft minecraftInstance = Minecraft.getInstance();
+            if (minecraftInstance.level == null || minecraftInstance.player == null) {
+                return new ItemProfitInfo(0L, 0L, 0);
+            }
 
-        long parsedPrice = 0L;
-        long estimatedValue = 0L;
+            List<Component> tooltipLines = stack.getTooltipLines(
+                    Item.TooltipContext.of(minecraftInstance.level),
+                    minecraftInstance.player,
+                    TooltipFlag.Default.NORMAL
+            );
 
-        for (Component componentLine : tooltipLines) {
-            String plainText = PriceParser.stripFormatting(componentLine.getString());
-            String lowerLine = plainText.toLowerCase();
+            long parsedPrice = 0L;
+            long estimatedValue = 0L;
 
-            int colonIndex = plainText.indexOf(":");
-            if (colonIndex != -1) {
-                String valuePart = plainText.substring(colonIndex + 1);
-                if (lowerLine.contains("buy it now:") || lowerLine.contains("buy-it-now:") || lowerLine.contains("bin price:") || lowerLine.contains("bin:") || lowerLine.contains("starting bid:") || lowerLine.contains("current bid:")) {
-                    parsedPrice = PriceParser.parsePrice(valuePart);
-                } else if (lowerLine.contains("estimated item value:") || lowerLine.contains("estimated value:")) {
-                    estimatedValue = PriceParser.parsePrice(valuePart);
+            for (Component componentLine : tooltipLines) {
+                String plainText = PriceParser.stripFormatting(componentLine.getString());
+                String lowerLine = plainText.toLowerCase();
+
+                int colonIndex = plainText.indexOf(":");
+                if (colonIndex != -1) {
+                    String valuePart = plainText.substring(colonIndex + 1);
+                    if (lowerLine.contains("buy it now:") || lowerLine.contains("buy-it-now:") || lowerLine.contains("bin price:") || lowerLine.contains("bin:") || lowerLine.contains("starting bid:") || lowerLine.contains("current bid:")) {
+                        parsedPrice = PriceParser.parsePrice(valuePart);
+                    } else if (lowerLine.contains("estimated item value:") || lowerLine.contains("estimated value:")) {
+                        estimatedValue = PriceParser.parsePrice(valuePart);
+                    }
                 }
             }
+
+            if (parsedPrice <= 0L || estimatedValue <= 0L) {
+                return new ItemProfitInfo(parsedPrice, estimatedValue, 0);
+            }
+
+            long priceDifference = estimatedValue - parsedPrice;
+            int color = calculateGradientColor(priceDifference);
+
+            return new ItemProfitInfo(parsedPrice, estimatedValue, color);
+        } finally {
+            EVALUATING_GUARD.set(false);
         }
-
-        if (parsedPrice <= 0L || estimatedValue <= 0L) {
-            return new ItemProfitInfo(parsedPrice, estimatedValue, 0);
-        }
-
-        long priceDifference = estimatedValue - parsedPrice;
-        int color = calculateGradientColor(priceDifference);
-
-        return new ItemProfitInfo(parsedPrice, estimatedValue, color);
     }
 
     private static int calculateGradientColor(long priceDifference) {

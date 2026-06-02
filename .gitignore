@@ -39,3 +39,4 @@ replay_*.log
 *.hprof
 *.jfr
 main.log
+crash-*.txt
