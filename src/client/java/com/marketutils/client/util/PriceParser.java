@@ -4,7 +4,6 @@ import java.util.regex.Pattern;
 
 public final class PriceParser {
     private static final Pattern MINECRAFT_FORMATTING_PATTERN = Pattern.compile("(?i)§[0-9a-fk-orx]");
-    private static final Pattern NON_ALPHANUMERIC_DOT_PATTERN = Pattern.compile("[^0-9a-z.]");
 
     private PriceParser() {
         // Prevent instantiation
@@ -22,26 +21,30 @@ public final class PriceParser {
             return 0L;
         }
 
-        String cleanedText = stripFormatting(inputText).toLowerCase().trim();
-        cleanedText = NON_ALPHANUMERIC_DOT_PATTERN.matcher(cleanedText).replaceAll("");
+        String cleanText = stripFormatting(inputText).trim();
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("([0-9.,]+)\\s*([kKmMbBtT]?)");
+        java.util.regex.Matcher matcher = pattern.matcher(cleanText);
 
-        double multiplier = 1.0;
-        if (cleanedText.endsWith("b")) {
-            multiplier = 1_000_000_000.0;
-            cleanedText = cleanedText.substring(0, cleanedText.length() - 1);
-        } else if (cleanedText.endsWith("m")) {
-            multiplier = 1_000_000.0;
-            cleanedText = cleanedText.substring(0, cleanedText.length() - 1);
-        } else if (cleanedText.endsWith("k")) {
-            multiplier = 1_000.0;
-            cleanedText = cleanedText.substring(0, cleanedText.length() - 1);
-        }
+        if (matcher.find()) {
+            String numberStr = matcher.group(1).replace(",", "");
+            String suffix = matcher.group(2).toLowerCase();
 
-        try {
-            double numericValue = Double.parseDouble(cleanedText);
-            return (long) (numericValue * multiplier);
-        } catch (NumberFormatException exception) {
-            return 0L;
+            double multiplier = 1.0;
+            if (suffix.equals("b")) {
+                multiplier = 1_000_000_000.0;
+            } else if (suffix.equals("m")) {
+                multiplier = 1_000_000.0;
+            } else if (suffix.equals("k")) {
+                multiplier = 1_000.0;
+            }
+
+            try {
+                double parsedValue = Double.parseDouble(numberStr);
+                return (long) (parsedValue * multiplier);
+            } catch (NumberFormatException exception) {
+                return 0L;
+            }
         }
+        return 0L;
     }
 }
