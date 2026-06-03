@@ -8,7 +8,7 @@ public class MarketutilsClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
 		ItemTooltipCallback.EVENT.register((itemStack, tooltipContext, tooltipFlag, lines) -> {
-			ProfitRenderer.appendWorthDebugText(itemStack, lines);
+			ProfitRenderer.appendTooltipText(itemStack, lines);
 		});
 	}
 }

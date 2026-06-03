@@ -1,19 +1,20 @@
 package com.marketutils.client.util;
 
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class PriceParser {
-    private static final Pattern MINECRAFT_FORMATTING_PATTERN = Pattern.compile("(?i)§[0-9a-fk-orx]");
 
-    private PriceParser() {
-        // Prevent instantiation
-    }
+    private static final Pattern FORMATTING_CODES = Pattern.compile("(?i)\u00A7[0-9a-fk-orx]");
+    private static final Pattern PRICE_NUMBER = Pattern.compile("([\\d,.]+)\\s*([kKmMbBtT]?)");
+
+    private PriceParser() {}
 
     public static String stripFormatting(String input) {
         if (input == null) {
             return "";
         }
-        return MINECRAFT_FORMATTING_PATTERN.matcher(input).replaceAll("");
+        return FORMATTING_CODES.matcher(input).replaceAll("");
     }
 
     public static long parsePrice(String inputText) {
@@ -21,30 +22,28 @@ public final class PriceParser {
             return 0L;
         }
 
-        String cleanText = stripFormatting(inputText).trim();
-        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("([0-9.,]+)\\s*([kKmMbBtT]?)");
-        java.util.regex.Matcher matcher = pattern.matcher(cleanText);
+        String clean = stripFormatting(inputText).trim();
+        Matcher matcher = PRICE_NUMBER.matcher(clean);
 
-        if (matcher.find()) {
-            String numberStr = matcher.group(1).replace(",", "");
-            String suffix = matcher.group(2).toLowerCase();
-
-            double multiplier = 1.0;
-            if (suffix.equals("b")) {
-                multiplier = 1_000_000_000.0;
-            } else if (suffix.equals("m")) {
-                multiplier = 1_000_000.0;
-            } else if (suffix.equals("k")) {
-                multiplier = 1_000.0;
-            }
-
-            try {
-                double parsedValue = Double.parseDouble(numberStr);
-                return (long) (parsedValue * multiplier);
-            } catch (NumberFormatException exception) {
-                return 0L;
-            }
+        if (!matcher.find()) {
+            return 0L;
         }
-        return 0L;
+
+        String numberPart = matcher.group(1).replace(",", "");
+        String suffix = matcher.group(2).toLowerCase();
+
+        double multiplier = switch (suffix) {
+            case "b", "t" -> 1_000_000_000.0;
+            case "m" -> 1_000_000.0;
+            case "k" -> 1_000.0;
+            default -> 1.0;
+        };
+
+        try {
+            double value = Double.parseDouble(numberPart);
+            return (long) (value * multiplier);
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
     }
 }

@@ -9,138 +9,302 @@ import net.minecraft.world.item.TooltipFlag;
 import net.minecraft.world.item.Item;
 import net.minecraft.network.chat.Component;
 
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.WeakHashMap;
 
+/**
+ * Evaluates whether auction items are worth buying by comparing listing price
+ * to SkyHanni's estimated value. Renders a green/red tint behind slots and
+ * appends debug text to tooltips.
+ *
+ * Architecture:
+ *   - renderSlotBackground() is called from the renderSlot mixin every frame.
+ *     It reads from a slot-indexed cache and draws the tint. Evaluations are
+ *     throttled to a few per frame to avoid FPS drops.
+ *   - appendTooltipText() is called from the ItemTooltipCallback. It parses
+ *     the already-assembled tooltip lines (no getTooltipLines call, zero
+ *     recursion risk) and appends a debug line.
+ */
 public final class ProfitRenderer {
-    private static final Map<ItemStack, ItemProfitInfo> PROFIT_CACHE = Collections.synchronizedMap(new WeakHashMap<>());
+
     private static final long MAX_PROFIT_TINT_LIMIT = 2_000_000L;
-    private static final int MINIMUM_ALPHA_TINT = 30;
-    private static final int MAXIMUM_ALPHA_TINT = 85;
+    private static final int MIN_ALPHA = 40;
+    private static final int MAX_ALPHA = 100;
 
-    private static final ThreadLocal<Boolean> EVALUATING_GUARD = ThreadLocal.withInitial(() -> false);
+    private static final int MAX_EVALUATIONS_PER_FRAME = 3;
+    private static int evaluationsThisFrame = 0;
+    private static long lastFrameStartNanos = 0;
 
-    private record ItemProfitInfo(long price, long estimatedValue, int tintColor) {}
+    /**
+     * Recursion guard. Set to true while evaluateFromTooltip is running
+     * (which calls getTooltipLines, which fires ItemTooltipCallback,
+     * which calls appendTooltipText). The guard prevents re-entrant
+     * evaluation in both public entry points.
+     */
+    private static boolean evaluating = false;
 
-    private ProfitRenderer() {
-        // Prevent instantiation
-    }
+    /**
+     * Cache keyed by slot index within the container. Using slot index instead
+     * of ItemStack identity because some container implementations return
+     * different ItemStack references per call, which breaks identity-based
+     * caching. Each entry also stores a fingerprint so stale entries (from
+     * page navigation) are detected and re-evaluated.
+     */
+    private static final Map<Integer, SlotProfitEntry> SLOT_CACHE = new HashMap<>();
 
-    public static void renderSlotBackground(GuiGraphics guiGraphics, Slot inventorySlot) {
-        if (inventorySlot == null) {
+    private record SlotProfitEntry(
+            String fingerprint,
+            long price,
+            long estimatedValue,
+            int tintColor
+    ) {}
+
+    private ProfitRenderer() {}
+
+    /**
+     * Called from the renderSlot mixin for each non-player slot on auction
+     * screens. Draws a translucent green/red rectangle behind the item.
+     *
+     * Evaluations of uncached slots are throttled to MAX_EVALUATIONS_PER_FRAME
+     * to prevent all 54 slots from being evaluated in a single frame (which
+     * would spike the frame time and drop FPS).
+     */
+    public static void renderSlotBackground(GuiGraphics guiGraphics, Slot slot) {
+        if (slot == null) {
             return;
         }
 
-        ItemStack itemStack = inventorySlot.getItem();
-        if (itemStack.isEmpty()) {
+        ItemStack stack = slot.getItem();
+        if (stack.isEmpty()) {
             return;
         }
 
-        ItemProfitInfo info = PROFIT_CACHE.computeIfAbsent(itemStack, ProfitRenderer::evaluateItemProfit);
-        if (info.tintColor() != 0) {
-            int xStart = inventorySlot.x;
-            int yStart = inventorySlot.y;
-            guiGraphics.fill(xStart, yStart, xStart + 16, yStart + 16, info.tintColor());
-        }
-    }
-
-    private static ItemProfitInfo evaluateItemProfit(ItemStack stack) {
-        if (EVALUATING_GUARD.get()) {
-            // Return dummy to break infinite recursion loop
-            return new ItemProfitInfo(0L, 0L, 0);
+        if (evaluating) {
+            return;
         }
 
-        EVALUATING_GUARD.set(true);
+        resetFrameCounterIfNewFrame();
+
+        int slotIndex = slot.index;
+        String fingerprint = buildFingerprint(stack);
+        SlotProfitEntry cached = SLOT_CACHE.get(slotIndex);
+
+        if (cached != null && cached.fingerprint().equals(fingerprint)) {
+            renderTint(guiGraphics, slot, cached.tintColor());
+            return;
+        }
+
+        if (evaluationsThisFrame >= MAX_EVALUATIONS_PER_FRAME) {
+            return;
+        }
+
+        evaluating = true;
         try {
-            Minecraft minecraftInstance = Minecraft.getInstance();
-            if (minecraftInstance.level == null || minecraftInstance.player == null) {
-                return new ItemProfitInfo(0L, 0L, 0);
-            }
-
-            List<Component> tooltipLines = stack.getTooltipLines(
-                    Item.TooltipContext.of(minecraftInstance.level),
-                    minecraftInstance.player,
-                    TooltipFlag.Default.NORMAL
-            );
-
-            long parsedPrice = 0L;
-            long estimatedValue = 0L;
-
-            for (Component componentLine : tooltipLines) {
-                String plainText = PriceParser.stripFormatting(componentLine.getString());
-                String lowerLine = plainText.toLowerCase();
-
-                int colonIndex = plainText.indexOf(":");
-                if (colonIndex != -1) {
-                    String valuePart = plainText.substring(colonIndex + 1);
-                    if (lowerLine.contains("buy it now:") || lowerLine.contains("buy-it-now:") || lowerLine.contains("bin price:") || lowerLine.contains("bin:") || lowerLine.contains("starting bid:") || lowerLine.contains("current bid:")) {
-                        parsedPrice = PriceParser.parsePrice(valuePart);
-                    } else if (lowerLine.contains("estimated item value:") || lowerLine.contains("estimated value:")) {
-                        estimatedValue = PriceParser.parsePrice(valuePart);
-                    }
-                }
-            }
-
-            if (parsedPrice <= 0L || estimatedValue <= 0L) {
-                return new ItemProfitInfo(parsedPrice, estimatedValue, 0);
-            }
-
-            long priceDifference = estimatedValue - parsedPrice;
-            int color = calculateGradientColor(priceDifference);
-
-            return new ItemProfitInfo(parsedPrice, estimatedValue, color);
+            SlotProfitEntry entry = evaluateFromTooltip(stack, fingerprint);
+            SLOT_CACHE.put(slotIndex, entry);
+            evaluationsThisFrame++;
+            renderTint(guiGraphics, slot, entry.tintColor());
         } finally {
-            EVALUATING_GUARD.set(false);
+            evaluating = false;
         }
     }
 
-    private static int calculateGradientColor(long priceDifference) {
-        if (priceDifference == 0L) {
-            return 0;
-        }
-
-        double scalingFactor = Math.min(1.0, (double) Math.abs(priceDifference) / MAX_PROFIT_TINT_LIMIT);
-        int alphaValue = MINIMUM_ALPHA_TINT + (int) ((MAXIMUM_ALPHA_TINT - MINIMUM_ALPHA_TINT) * scalingFactor);
-
-        if (priceDifference > 0L) {
-            // Safe vibrant green: alpha, red=0, green=180, blue=0
-            return (alphaValue << 24) | (0 << 16) | (180 << 8) | 0;
-        } else {
-            // Safe vibrant red: alpha, red=180, green=0, blue=0
-            return (alphaValue << 24) | (180 << 16) | (0 << 8) | 0;
-        }
-    }
-
-    public static void appendWorthDebugText(ItemStack stack, List<Component> lines) {
+    /**
+     * Called from the ItemTooltipCallback registered in MarketutilsClient.
+     * Parses the tooltip lines that Minecraft and other mods have already
+     * assembled -- no getTooltipLines() call, so there is zero recursion
+     * risk and negligible performance cost.
+     *
+     * Always appends a "[MarketUtils]" tag for visibility during debugging.
+     */
+    public static void appendTooltipText(ItemStack stack, List<Component> lines) {
         if (stack == null || stack.isEmpty() || lines == null) {
             return;
         }
 
-        ItemProfitInfo info = PROFIT_CACHE.computeIfAbsent(stack, ProfitRenderer::evaluateItemProfit);
-        if (info.price() > 0L && info.estimatedValue() > 0L) {
-            long delta = info.estimatedValue() - info.price();
-            if (delta > 0L) {
-                lines.add(Component.literal("§aWorth it! Profit: +" + formatNumber(delta) + " coins"));
-            } else if (delta < 0L) {
-                lines.add(Component.literal("§cNot worth it! Loss: -" + formatNumber(Math.abs(delta)) + " coins"));
-            } else {
-                lines.add(Component.literal("§eNeutral! Value matches Price"));
+        if (evaluating) {
+            return;
+        }
+
+        lines.add(Component.literal("\u00A77[MarketUtils] Active"));
+
+        long price = 0L;
+        long estimatedValue = 0L;
+
+        for (Component line : lines) {
+            String plain = PriceParser.stripFormatting(line.getString());
+            String lower = plain.toLowerCase();
+            int colon = plain.indexOf(':');
+            if (colon == -1) {
+                continue;
             }
+
+            String afterColon = plain.substring(colon + 1);
+
+            if (isListingPriceLabel(lower)) {
+                long parsed = PriceParser.parsePrice(afterColon);
+                if (parsed > 0L) {
+                    price = parsed;
+                }
+            } else if (isEstimatedValueLabel(lower)) {
+                long parsed = PriceParser.parsePrice(afterColon);
+                if (parsed > 0L) {
+                    estimatedValue = parsed;
+                }
+            }
+        }
+
+        if (price > 0L && estimatedValue > 0L) {
+            long delta = estimatedValue - price;
+            String text;
+            if (delta > 0L) {
+                text = "\u00A7aWorth it! Profit: +" + formatNumber(delta) + " coins";
+            } else if (delta < 0L) {
+                text = "\u00A7cNot worth it! Loss: " + formatNumber(delta) + " coins";
+            } else {
+                text = "\u00A7eBreak-even";
+            }
+            lines.add(Component.literal(text));
         }
     }
 
+    public static void clearCache() {
+        SLOT_CACHE.clear();
+    }
+
+    // -- Internal evaluation --
+
+    /**
+     * Builds the full tooltip for a stack (triggering all mod callbacks with
+     * the guard set, so our own callback is a no-op) and parses price/value
+     * from the resulting lines.
+     */
+    private static SlotProfitEntry evaluateFromTooltip(ItemStack stack, String fingerprint) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || mc.player == null) {
+            return new SlotProfitEntry(fingerprint, 0L, 0L, 0);
+        }
+
+        List<Component> tooltipLines = stack.getTooltipLines(
+                Item.TooltipContext.of(mc.level),
+                mc.player,
+                TooltipFlag.Default.NORMAL
+        );
+
+        long price = 0L;
+        long estimatedValue = 0L;
+
+        for (Component line : tooltipLines) {
+            String plain = PriceParser.stripFormatting(line.getString());
+            String lower = plain.toLowerCase();
+            int colon = plain.indexOf(':');
+            if (colon == -1) {
+                continue;
+            }
+
+            String afterColon = plain.substring(colon + 1);
+
+            if (isListingPriceLabel(lower)) {
+                long parsed = PriceParser.parsePrice(afterColon);
+                if (parsed > 0L) {
+                    price = parsed;
+                }
+            } else if (isEstimatedValueLabel(lower)) {
+                long parsed = PriceParser.parsePrice(afterColon);
+                if (parsed > 0L) {
+                    estimatedValue = parsed;
+                }
+            }
+        }
+
+        if (price <= 0L || estimatedValue <= 0L) {
+            return new SlotProfitEntry(fingerprint, price, estimatedValue, 0);
+        }
+
+        long delta = estimatedValue - price;
+        int color = computeTintColor(delta);
+        return new SlotProfitEntry(fingerprint, price, estimatedValue, color);
+    }
+
+    // -- Label matching --
+
+    private static boolean isListingPriceLabel(String lowerLine) {
+        return lowerLine.contains("buy it now:")
+                || lowerLine.contains("starting bid:")
+                || lowerLine.contains("current bid:")
+                || lowerLine.contains("top bid:")
+                || lowerLine.contains("bin price:")
+                || lowerLine.contains("buy-it-now:")
+                || lowerLine.contains("price:");
+    }
+
+    private static boolean isEstimatedValueLabel(String lowerLine) {
+        return lowerLine.contains("estimated item value:")
+                || lowerLine.contains("estimated value:")
+                || lowerLine.contains("est. value:")
+                || lowerLine.contains("item value:");
+    }
+
+    // -- Rendering helpers --
+
+    private static void renderTint(GuiGraphics guiGraphics, Slot slot, int tintColor) {
+        if (tintColor == 0) {
+            return;
+        }
+        guiGraphics.fill(slot.x, slot.y, slot.x + 16, slot.y + 16, tintColor);
+    }
+
+    private static int computeTintColor(long priceDifference) {
+        if (priceDifference == 0L) {
+            return 0;
+        }
+
+        double scale = Math.min(1.0, (double) Math.abs(priceDifference) / MAX_PROFIT_TINT_LIMIT);
+        int alpha = MIN_ALPHA + (int) ((MAX_ALPHA - MIN_ALPHA) * scale);
+
+        if (priceDifference > 0L) {
+            return (alpha << 24) | (0x00B400);
+        } else {
+            return (alpha << 24) | (0xB40000);
+        }
+    }
+
+    // -- Frame throttling --
+
+    private static void resetFrameCounterIfNewFrame() {
+        long now = System.nanoTime();
+        if (now - lastFrameStartNanos > 1_000_000L) {
+            evaluationsThisFrame = 0;
+            lastFrameStartNanos = now;
+        }
+    }
+
+    // -- Fingerprinting --
+
+    /**
+     * Produces a lightweight string that changes when the item in a slot
+     * changes (e.g., AH page navigation). Uses the display name, which is
+     * stable within a single page but different across items.
+     */
+    private static String buildFingerprint(ItemStack stack) {
+        return stack.getDisplayName().getString();
+    }
+
+    // -- Number formatting --
+
     private static String formatNumber(long number) {
-        if (number >= 1_000_000_000L) {
-            return String.format("%.2fB", number / 1_000_000_000.0);
+        long absolute = Math.abs(number);
+        String sign = number < 0 ? "-" : "+";
+        if (absolute >= 1_000_000_000L) {
+            return sign + String.format("%.2fB", absolute / 1_000_000_000.0);
         }
-        if (number >= 1_000_000L) {
-            return String.format("%.2fM", number / 1_000_000.0);
+        if (absolute >= 1_000_000L) {
+            return sign + String.format("%.2fM", absolute / 1_000_000.0);
         }
-        if (number >= 1_000L) {
-            return String.format("%.1fK", number / 1_000.0);
+        if (absolute >= 1_000L) {
+            return sign + String.format("%.1fK", absolute / 1_000.0);
         }
-        return String.valueOf(number);
+        return sign + absolute;
     }
 }

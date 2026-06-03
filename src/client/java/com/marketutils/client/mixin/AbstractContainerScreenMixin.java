@@ -15,24 +15,46 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(AbstractContainerScreen.class)
 public abstract class AbstractContainerScreenMixin {
 
+    @Inject(method = "init", at = @At("TAIL"))
+    private void clearProfitCacheOnScreenOpen(CallbackInfo callbackInfo) {
+        if (isAuctionScreen()) {
+            ProfitRenderer.clearCache();
+        }
+    }
+
+    @Inject(method = "onClose", at = @At("HEAD"))
+    private void clearProfitCacheOnScreenClose(CallbackInfo callbackInfo) {
+        ProfitRenderer.clearCache();
+    }
+
     @Inject(method = "renderSlot", at = @At("HEAD"))
     private void injectProfitOverlay(GuiGraphics guiGraphics, Slot inventorySlot, CallbackInfo callbackInfo) {
         if (inventorySlot == null) {
             return;
         }
 
-        Screen screenInstance = (Screen) (Object) this;
-        Component titleComponent = screenInstance.getTitle();
-        if (titleComponent == null) {
+        if (!isAuctionScreen()) {
             return;
         }
 
-        String screenTitle = titleComponent.getString();
-        if (screenTitle.contains("Auctions") || screenTitle.contains("Auction") || screenTitle.contains("BIN")) {
-            // Only process slots that do not belong to the player's personal inventory
-            if (inventorySlot.container != null && !(inventorySlot.container instanceof Inventory)) {
-                ProfitRenderer.renderSlotBackground(guiGraphics, inventorySlot);
-            }
+        boolean isPlayerSlot = inventorySlot.container instanceof Inventory;
+        if (isPlayerSlot) {
+            return;
         }
+
+        ProfitRenderer.renderSlotBackground(guiGraphics, inventorySlot);
+    }
+
+    private boolean isAuctionScreen() {
+        Screen screenInstance = (Screen) (Object) this;
+        Component titleComponent = screenInstance.getTitle();
+        if (titleComponent == null) {
+            return false;
+        }
+
+        String title = titleComponent.getString();
+        return title.contains("Auction")
+                || title.contains("Auctions")
+                || title.contains("BIN");
     }
 }
