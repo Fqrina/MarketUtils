@@ -27,7 +27,12 @@ public abstract class AbstractContainerScreenMixin {
         ProfitRenderer.clearCache();
     }
 
-    @Inject(method = "renderSlot", at = @At("HEAD"))
+    /**
+     * Inject at TAIL (after item icon and rarity backgrounds have been drawn)
+     * so the profit border renders ON TOP of SkyHanni's rarity background
+     * color and the item icon, but only at the thin 2px edges.
+     */
+    @Inject(method = "renderSlot", at = @At("TAIL"))
     private void injectProfitOverlay(GuiGraphics guiGraphics, Slot inventorySlot, CallbackInfo callbackInfo) {
         if (inventorySlot == null) {
             return;

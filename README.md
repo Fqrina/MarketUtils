@@ -6,13 +6,19 @@ Last updated: 3 June 2026
 
 ## What it does
 
-When you open an Auction House or BIN screen, MarketUtils compares each item's **listing price** against **SkyHanni's estimated item value** and paints a translucent background behind the slot:
+When you open an Auction House or BIN screen, MarketUtils compares each item's **listing price** against **SkyHanni's estimated item value** and draws a colored **border** around each slot:
 
-- **Green** -- estimated value exceeds listing price (profit). Stronger green = bigger margin.
-- **Red** -- listing price exceeds estimated value (loss). Stronger red = bigger loss.
-- **No tint** -- price/value data unavailable or break-even.
+| Border Color | Meaning |
+|-------------|---------|
+| Deep green | BIN price is far below estimated value (great deal, 50%+ margin) |
+| Light green | BIN price is moderately below estimated value |
+| Yellow | BIN price is within 3% of estimated value (fair price) |
+| Orange | BIN price is moderately above estimated value |
+| Deep red | BIN price is far above estimated value (bad deal, 50%+ overpay) |
 
-A debug tooltip line is also appended when hovering: "Worth it! Profit: +X coins" or "Not worth it! Loss: -X coins".
+The border is drawn ON TOP of the slot, so SkyHanni's rarity backgrounds (pink for mythic, yellow for legendary, blue for rare, etc.) remain fully visible in the center. No overlap, no confusion.
+
+A tooltip line is also appended when hovering, showing the exact percentage and coin difference.
 
 ## Requirements
 
@@ -32,13 +38,20 @@ Output: `build\libs\marketutils-1.0.0.jar`
 
 Copy to your Fabric `mods` folder and launch Minecraft.
 
-## Latest fix (3 June 2026)
+## Changelog
 
-- Fixed `StackOverflowError` crash caused by tooltip callback recursion.
-- Fixed severe FPS drops when opening AH (was evaluating all 54 slots every frame). Now throttled to 3 evaluations per frame with slot-index caching.
-- Fixed colored background only appearing on one item (was using identity-based cache keys that broke when `Slot.getItem()` returned different references).
-- Tooltip callback now parses already-assembled lines directly instead of re-calling `getTooltipLines()`, eliminating recursion and reducing overhead to near zero.
-- Added unconditional `[MarketUtils] Active` tag in tooltips for debugging visibility.
+### v1.0.0-rc2 (3 June 2026)
+- Changed from full-slot fill to 2px border rendering (no longer hides SkyHanni rarity backgrounds)
+- Changed to percentage-based color gradation (green -> yellow -> red based on price vs estimated value ratio)
+- Border draws at TAIL of renderSlot (on top of rarity backgrounds, at the edges only)
+- Tooltip now shows percentage deviation and coin amount
+
+### v1.0.0-rc1 (3 June 2026)
+- Fixed `StackOverflowError` crash caused by tooltip callback recursion
+- Fixed severe FPS drops (was evaluating all 54 slots every frame)
+- Fixed colored background only appearing on one item
+- Slot-index caching with frame-throttled evaluation (max 3/frame)
+- Added `[MarketUtils] Active` debug tag in tooltips
 
 ## License
 

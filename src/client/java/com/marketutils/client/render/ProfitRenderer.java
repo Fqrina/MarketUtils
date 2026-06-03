@@ -15,43 +15,36 @@ import java.util.Map;
 
 /**
  * Evaluates whether auction items are worth buying by comparing listing price
- * to SkyHanni's estimated value. Renders a green/red tint behind slots and
- * appends debug text to tooltips.
+ * to SkyHanni's estimated value. Renders a colored BORDER around slots (so
+ * SkyHanni's rarity backgrounds remain visible) and appends debug text to
+ * tooltips.
  *
- * Architecture:
- *   - renderSlotBackground() is called from the renderSlot mixin every frame.
- *     It reads from a slot-indexed cache and draws the tint. Evaluations are
- *     throttled to a few per frame to avoid FPS drops.
- *   - appendTooltipText() is called from the ItemTooltipCallback. It parses
- *     the already-assembled tooltip lines (no getTooltipLines call, zero
- *     recursion risk) and appends a debug line.
+ * Color scale is percentage-based:
+ *   BIN far below estimated value  -> deep green border  (great deal)
+ *   BIN slightly below             -> yellow-green border
+ *   BIN roughly equal              -> yellow border      (neutral)
+ *   BIN slightly above             -> orange border
+ *   BIN far above estimated value  -> deep red border    (bad deal)
  */
 public final class ProfitRenderer {
-
-    private static final long MAX_PROFIT_TINT_LIMIT = 2_000_000L;
-    private static final int MIN_ALPHA = 40;
-    private static final int MAX_ALPHA = 100;
 
     private static final int MAX_EVALUATIONS_PER_FRAME = 3;
     private static int evaluationsThisFrame = 0;
     private static long lastFrameStartNanos = 0;
 
-    /**
-     * Recursion guard. Set to true while evaluateFromTooltip is running
-     * (which calls getTooltipLines, which fires ItemTooltipCallback,
-     * which calls appendTooltipText). The guard prevents re-entrant
-     * evaluation in both public entry points.
-     */
     private static boolean evaluating = false;
 
-    /**
-     * Cache keyed by slot index within the container. Using slot index instead
-     * of ItemStack identity because some container implementations return
-     * different ItemStack references per call, which breaks identity-based
-     * caching. Each entry also stores a fingerprint so stale entries (from
-     * page navigation) are detected and re-evaluated.
-     */
     private static final Map<Integer, SlotProfitEntry> SLOT_CACHE = new HashMap<>();
+
+    private static final int BORDER_THICKNESS = 2;
+
+    /**
+     * Percentage thresholds for the color gradient.
+     * Within the neutral band, the border is yellow.
+     * Beyond max scale, the color is fully saturated green/red.
+     */
+    private static final double NEUTRAL_BAND_PERCENT = 0.03;
+    private static final double MAX_SCALE_PERCENT = 0.50;
 
     private record SlotProfitEntry(
             String fingerprint,
@@ -63,12 +56,10 @@ public final class ProfitRenderer {
     private ProfitRenderer() {}
 
     /**
-     * Called from the renderSlot mixin for each non-player slot on auction
-     * screens. Draws a translucent green/red rectangle behind the item.
-     *
-     * Evaluations of uncached slots are throttled to MAX_EVALUATIONS_PER_FRAME
-     * to prevent all 54 slots from being evaluated in a single frame (which
-     * would spike the frame time and drop FPS).
+     * Called from the renderSlot mixin (at TAIL, after item icon and rarity
+     * backgrounds have been drawn). Draws a 2px colored border on top of
+     * everything at the slot edges, leaving the center visible for rarity
+     * backgrounds from SkyHanni and the item icon.
      */
     public static void renderSlotBackground(GuiGraphics guiGraphics, Slot slot) {
         if (slot == null) {
@@ -91,7 +82,7 @@ public final class ProfitRenderer {
         SlotProfitEntry cached = SLOT_CACHE.get(slotIndex);
 
         if (cached != null && cached.fingerprint().equals(fingerprint)) {
-            renderTint(guiGraphics, slot, cached.tintColor());
+            renderBorder(guiGraphics, slot, cached.tintColor());
             return;
         }
 
@@ -104,7 +95,7 @@ public final class ProfitRenderer {
             SlotProfitEntry entry = evaluateFromTooltip(stack, fingerprint);
             SLOT_CACHE.put(slotIndex, entry);
             evaluationsThisFrame++;
-            renderTint(guiGraphics, slot, entry.tintColor());
+            renderBorder(guiGraphics, slot, entry.tintColor());
         } finally {
             evaluating = false;
         }
@@ -113,10 +104,7 @@ public final class ProfitRenderer {
     /**
      * Called from the ItemTooltipCallback registered in MarketutilsClient.
      * Parses the tooltip lines that Minecraft and other mods have already
-     * assembled -- no getTooltipLines() call, so there is zero recursion
-     * risk and negligible performance cost.
-     *
-     * Always appends a "[MarketUtils]" tag for visibility during debugging.
+     * assembled. No getTooltipLines() call, zero recursion risk.
      */
     public static void appendTooltipText(ItemStack stack, List<Component> lines) {
         if (stack == null || stack.isEmpty() || lines == null) {
@@ -157,13 +145,24 @@ public final class ProfitRenderer {
 
         if (price > 0L && estimatedValue > 0L) {
             long delta = estimatedValue - price;
+            double profitPercent = (double) delta / (double) estimatedValue * 100.0;
+
             String text;
-            if (delta > 0L) {
-                text = "\u00A7aWorth it! Profit: +" + formatNumber(delta) + " coins";
-            } else if (delta < 0L) {
-                text = "\u00A7cNot worth it! Loss: " + formatNumber(delta) + " coins";
+            if (profitPercent > NEUTRAL_BAND_PERCENT * 100.0) {
+                text = String.format(
+                        "\u00A7aWorth it! %.1f%% below value (%s coins profit)",
+                        profitPercent, formatNumber(delta)
+                );
+            } else if (profitPercent < -(NEUTRAL_BAND_PERCENT * 100.0)) {
+                text = String.format(
+                        "\u00A7cNot worth it! %.1f%% above value (%s coins loss)",
+                        Math.abs(profitPercent), formatNumber(delta)
+                );
             } else {
-                text = "\u00A7eBreak-even";
+                text = String.format(
+                        "\u00A7eFair price (within %.0f%% of estimated value)",
+                        NEUTRAL_BAND_PERCENT * 100.0
+                );
             }
             lines.add(Component.literal(text));
         }
@@ -175,11 +174,6 @@ public final class ProfitRenderer {
 
     // -- Internal evaluation --
 
-    /**
-     * Builds the full tooltip for a stack (triggering all mod callbacks with
-     * the guard set, so our own callback is a no-op) and parses price/value
-     * from the resulting lines.
-     */
     private static SlotProfitEntry evaluateFromTooltip(ItemStack stack, String fingerprint) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) {
@@ -222,8 +216,7 @@ public final class ProfitRenderer {
             return new SlotProfitEntry(fingerprint, price, estimatedValue, 0);
         }
 
-        long delta = estimatedValue - price;
-        int color = computeTintColor(delta);
+        int color = computeTintColor(price, estimatedValue);
         return new SlotProfitEntry(fingerprint, price, estimatedValue, color);
     }
 
@@ -246,27 +239,75 @@ public final class ProfitRenderer {
                 || lowerLine.contains("item value:");
     }
 
-    // -- Rendering helpers --
+    // -- Border rendering --
 
-    private static void renderTint(GuiGraphics guiGraphics, Slot slot, int tintColor) {
-        if (tintColor == 0) {
+    /**
+     * Draws a 2px colored border inside the slot edges. Drawn at TAIL of
+     * renderSlot so it sits ON TOP of the item icon and rarity backgrounds,
+     * but only at the thin edges. The center 12x12 area remains fully
+     * visible for the item icon and SkyHanni's rarity color.
+     */
+    private static void renderBorder(GuiGraphics g, Slot slot, int color) {
+        if (color == 0) {
             return;
         }
-        guiGraphics.fill(slot.x, slot.y, slot.x + 16, slot.y + 16, tintColor);
+
+        int x = slot.x;
+        int y = slot.y;
+        int t = BORDER_THICKNESS;
+
+        g.fill(x, y, x + 16, y + t, color);
+        g.fill(x, y + 16 - t, x + 16, y + 16, color);
+        g.fill(x, y + t, x + t, y + 16 - t, color);
+        g.fill(x + 16 - t, y + t, x + 16, y + 16 - t, color);
     }
 
-    private static int computeTintColor(long priceDifference) {
-        if (priceDifference == 0L) {
+    // -- Percentage-based color gradient --
+
+    /**
+     * Computes an ARGB color based on how far the listing price is from the
+     * estimated value, expressed as a percentage of estimated value.
+     *
+     * The color scale:
+     *   +50% or more below value -> deep green  (alpha 200, pure green)
+     *   +25% below value         -> medium green (blended)
+     *   +3% below value          -> light green  (close to yellow)
+     *   within +/-3%             -> yellow        (neutral band)
+     *   -3% above value          -> light red    (close to yellow)
+     *   -25% above value         -> medium red   (blended)
+     *   -50% or more above value -> deep red     (alpha 200, pure red)
+     */
+    private static int computeTintColor(long price, long estimatedValue) {
+        if (estimatedValue <= 0L || price <= 0L) {
             return 0;
         }
 
-        double scale = Math.min(1.0, (double) Math.abs(priceDifference) / MAX_PROFIT_TINT_LIMIT);
-        int alpha = MIN_ALPHA + (int) ((MAX_ALPHA - MIN_ALPHA) * scale);
+        double profitFraction = (double) (estimatedValue - price) / (double) estimatedValue;
 
-        if (priceDifference > 0L) {
-            return (alpha << 24) | (0x00B400);
+        if (Math.abs(profitFraction) < NEUTRAL_BAND_PERCENT) {
+            return (120 << 24) | (0xE0 << 16) | (0xD0 << 8) | 0x00;
+        }
+
+        if (profitFraction > 0) {
+            double t = Math.min(1.0,
+                    (profitFraction - NEUTRAL_BAND_PERCENT)
+                    / (MAX_SCALE_PERCENT - NEUTRAL_BAND_PERCENT));
+
+            int r = (int) (210 * (1.0 - t));
+            int g = (int) (170 + 50 * t);
+            int b = 0;
+            int alpha = (int) (130 + 80 * t);
+            return (alpha << 24) | (r << 16) | (g << 8) | b;
         } else {
-            return (alpha << 24) | (0xB40000);
+            double t = Math.min(1.0,
+                    (Math.abs(profitFraction) - NEUTRAL_BAND_PERCENT)
+                    / (MAX_SCALE_PERCENT - NEUTRAL_BAND_PERCENT));
+
+            int r = (int) (200 + 30 * t);
+            int g = (int) (170 * (1.0 - t));
+            int b = 0;
+            int alpha = (int) (130 + 80 * t);
+            return (alpha << 24) | (r << 16) | (g << 8) | b;
         }
     }
 
@@ -282,11 +323,6 @@ public final class ProfitRenderer {
 
     // -- Fingerprinting --
 
-    /**
-     * Produces a lightweight string that changes when the item in a slot
-     * changes (e.g., AH page navigation). Uses the display name, which is
-     * stable within a single page but different across items.
-     */
     private static String buildFingerprint(ItemStack stack) {
         return stack.getDisplayName().getString();
     }
