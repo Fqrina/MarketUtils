@@ -1,6 +1,6 @@
 # MarketUtils -- Mod Direction Notes
 
-Last updated: 3 June 2026
+Last updated: 3 June 2026 (v1.0.0-rc3)
 
 
 ## What the mod actually does
@@ -79,6 +79,10 @@ PriceParser (utility)
 7. **Absolute vs. percentage-based color.** A 2M coin difference means very different things on a 5M item vs a 100M item. Percentage-based gradation (profit as fraction of estimated value) gives consistent visual meaning regardless of item price tier.
 
 8. **Border vs. full-slot fill.** A full translucent fill overlaps with SkyHanni's rarity backgrounds (pink, yellow, blue), making both hard to read. A thin 2px border at the slot edges avoids the overlap entirely.
+
+9. **Callback ordering between mods.** Fabric's `ItemTooltipCallback` fires callbacks in registration order. If SkyHanni registers after MarketUtils, its "Estimated Item Value:" line is not present in the `lines` list when our callback runs. The fix: have the tooltip callback fall back to the slot cache (populated by `renderSlotBackground`, which calls `getTooltipLines()` independently and sees all mods' lines).
+
+10. **Overly broad label matching.** Using `lowerLine.contains("price:")` to find the BIN price also matches unrelated tooltip lines like "Upgrade Price:" or item lore containing the word "price". This caused garbage values to be parsed as the listing price, producing wrong colors (green when it should be red). Each label pattern must include enough prefix context to avoid false matches.
 
 
 ## Compliance

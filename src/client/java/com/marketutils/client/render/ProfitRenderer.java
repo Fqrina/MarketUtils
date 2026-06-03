@@ -38,11 +38,6 @@ public final class ProfitRenderer {
 
     private static final int BORDER_THICKNESS = 2;
 
-    /**
-     * Percentage thresholds for the color gradient.
-     * Within the neutral band, the border is yellow.
-     * Beyond max scale, the color is fully saturated green/red.
-     */
     private static final double NEUTRAL_BAND_PERCENT = 0.03;
     private static final double MAX_SCALE_PERCENT = 0.50;
 
@@ -103,8 +98,16 @@ public final class ProfitRenderer {
 
     /**
      * Called from the ItemTooltipCallback registered in MarketutilsClient.
-     * Parses the tooltip lines that Minecraft and other mods have already
-     * assembled. No getTooltipLines() call, zero recursion risk.
+     *
+     * This callback parses the tooltip lines that have been assembled SO FAR.
+     * SkyHanni's "Estimated Item Value" line may or may not be present
+     * depending on callback registration order.
+     *
+     * To handle this, the tooltip text falls back to the SLOT_CACHE (which
+     * was populated by renderSlotBackground using a separate getTooltipLines
+     * call that includes all mods' lines). If the cache has data for this
+     * item, the tooltip text is derived from the cache. If not (e.g., the
+     * item hasn't been rendered yet), we try parsing the provided lines.
      */
     public static void appendTooltipText(ItemStack stack, List<Component> lines) {
         if (stack == null || stack.isEmpty() || lines == null) {
@@ -120,25 +123,36 @@ public final class ProfitRenderer {
         long price = 0L;
         long estimatedValue = 0L;
 
-        for (Component line : lines) {
-            String plain = PriceParser.stripFormatting(line.getString());
-            String lower = plain.toLowerCase();
-            int colon = plain.indexOf(':');
-            if (colon == -1) {
-                continue;
-            }
-
-            String afterColon = plain.substring(colon + 1);
-
-            if (isListingPriceLabel(lower)) {
-                long parsed = PriceParser.parsePrice(afterColon);
-                if (parsed > 0L) {
-                    price = parsed;
+        // First: check the slot cache for pre-computed data from renderSlotBackground.
+        // The slot cache was populated via getTooltipLines() which fires ALL mod
+        // callbacks (including SkyHanni), so it reliably has the estimated value.
+        SlotProfitEntry cachedEntry = findCachedEntryForStack(stack);
+        if (cachedEntry != null && cachedEntry.price() > 0L && cachedEntry.estimatedValue() > 0L) {
+            price = cachedEntry.price();
+            estimatedValue = cachedEntry.estimatedValue();
+        } else {
+            // Fallback: try parsing the provided tooltip lines directly.
+            // This works if SkyHanni's callback fired before ours.
+            for (Component line : lines) {
+                String plain = PriceParser.stripFormatting(line.getString());
+                String lower = plain.toLowerCase();
+                int colon = plain.indexOf(':');
+                if (colon == -1) {
+                    continue;
                 }
-            } else if (isEstimatedValueLabel(lower)) {
-                long parsed = PriceParser.parsePrice(afterColon);
-                if (parsed > 0L) {
-                    estimatedValue = parsed;
+
+                String afterColon = plain.substring(colon + 1);
+
+                if (isListingPriceLabel(lower)) {
+                    long parsed = PriceParser.parsePrice(afterColon);
+                    if (parsed > 0L) {
+                        price = parsed;
+                    }
+                } else if (isEstimatedValueLabel(lower)) {
+                    long parsed = PriceParser.parsePrice(afterColon);
+                    if (parsed > 0L) {
+                        estimatedValue = parsed;
+                    }
                 }
             }
         }
@@ -165,11 +179,33 @@ public final class ProfitRenderer {
                 );
             }
             lines.add(Component.literal(text));
+
+            lines.add(Component.literal(String.format(
+                    "\u00A78BIN: %s | Est: %s",
+                    formatNumber(price), formatNumber(estimatedValue)
+            )));
         }
     }
 
     public static void clearCache() {
         SLOT_CACHE.clear();
+    }
+
+    // -- Cache lookup for tooltip fallback --
+
+    /**
+     * Scans the slot cache for an entry whose fingerprint matches this
+     * stack's display name. Used by appendTooltipText to retrieve the
+     * pre-computed price/value from the render path.
+     */
+    private static SlotProfitEntry findCachedEntryForStack(ItemStack stack) {
+        String targetFingerprint = buildFingerprint(stack);
+        for (SlotProfitEntry entry : SLOT_CACHE.values()) {
+            if (entry.fingerprint().equals(targetFingerprint)) {
+                return entry;
+            }
+        }
+        return null;
     }
 
     // -- Internal evaluation --
@@ -222,30 +258,41 @@ public final class ProfitRenderer {
 
     // -- Label matching --
 
+    /**
+     * Matches tooltip lines that contain the auction listing price.
+     *
+     * IMPORTANT: These patterns must be specific enough to avoid matching
+     * unrelated lines. For example, "price:" alone is too broad and would
+     * match things like "Upgrade Price:" or item lore containing "price:".
+     * Each pattern includes a prefix keyword that anchors it to known
+     * Hypixel auction formatting.
+     */
     private static boolean isListingPriceLabel(String lowerLine) {
         return lowerLine.contains("buy it now:")
                 || lowerLine.contains("starting bid:")
                 || lowerLine.contains("current bid:")
                 || lowerLine.contains("top bid:")
                 || lowerLine.contains("bin price:")
-                || lowerLine.contains("buy-it-now:")
-                || lowerLine.contains("price:");
+                || lowerLine.contains("buy-it-now:");
     }
 
+    /**
+     * Matches tooltip lines that contain the estimated item value from
+     * SkyHanni or similar mods.
+     */
     private static boolean isEstimatedValueLabel(String lowerLine) {
         return lowerLine.contains("estimated item value:")
                 || lowerLine.contains("estimated value:")
                 || lowerLine.contains("est. value:")
-                || lowerLine.contains("item value:");
+                || lowerLine.contains("est. item value:");
     }
 
     // -- Border rendering --
 
     /**
-     * Draws a 2px colored border inside the slot edges. Drawn at TAIL of
-     * renderSlot so it sits ON TOP of the item icon and rarity backgrounds,
-     * but only at the thin edges. The center 12x12 area remains fully
-     * visible for the item icon and SkyHanni's rarity color.
+     * Draws a colored border inside the slot edges. Only the 4 edge strips
+     * are drawn; the center area is untouched so SkyHanni's rarity
+     * background and the item icon remain fully visible.
      */
     private static void renderBorder(GuiGraphics g, Slot slot, int color) {
         if (color == 0) {
@@ -268,14 +315,10 @@ public final class ProfitRenderer {
      * Computes an ARGB color based on how far the listing price is from the
      * estimated value, expressed as a percentage of estimated value.
      *
-     * The color scale:
-     *   +50% or more below value -> deep green  (alpha 200, pure green)
-     *   +25% below value         -> medium green (blended)
-     *   +3% below value          -> light green  (close to yellow)
-     *   within +/-3%             -> yellow        (neutral band)
-     *   -3% above value          -> light red    (close to yellow)
-     *   -25% above value         -> medium red   (blended)
-     *   -50% or more above value -> deep red     (alpha 200, pure red)
+     * profitFraction = (estimatedValue - price) / estimatedValue
+     *   positive => BIN is below estimated (good deal, green)
+     *   negative => BIN is above estimated (bad deal, red)
+     *   near zero => neutral (yellow)
      */
     private static int computeTintColor(long price, long estimatedValue) {
         if (estimatedValue <= 0L || price <= 0L) {
@@ -285,10 +328,11 @@ public final class ProfitRenderer {
         double profitFraction = (double) (estimatedValue - price) / (double) estimatedValue;
 
         if (Math.abs(profitFraction) < NEUTRAL_BAND_PERCENT) {
-            return (120 << 24) | (0xE0 << 16) | (0xD0 << 8) | 0x00;
+            return (130 << 24) | (0xE0 << 16) | (0xD0 << 8) | 0x00;
         }
 
         if (profitFraction > 0) {
+            // Good deal: BIN is below estimated value -> green
             double t = Math.min(1.0,
                     (profitFraction - NEUTRAL_BAND_PERCENT)
                     / (MAX_SCALE_PERCENT - NEUTRAL_BAND_PERCENT));
@@ -296,17 +340,18 @@ public final class ProfitRenderer {
             int r = (int) (210 * (1.0 - t));
             int g = (int) (170 + 50 * t);
             int b = 0;
-            int alpha = (int) (130 + 80 * t);
+            int alpha = (int) (140 + 70 * t);
             return (alpha << 24) | (r << 16) | (g << 8) | b;
         } else {
+            // Bad deal: BIN is above estimated value -> red
             double t = Math.min(1.0,
                     (Math.abs(profitFraction) - NEUTRAL_BAND_PERCENT)
                     / (MAX_SCALE_PERCENT - NEUTRAL_BAND_PERCENT));
 
-            int r = (int) (200 + 30 * t);
+            int r = (int) (200 + 40 * t);
             int g = (int) (170 * (1.0 - t));
             int b = 0;
-            int alpha = (int) (130 + 80 * t);
+            int alpha = (int) (140 + 70 * t);
             return (alpha << 24) | (r << 16) | (g << 8) | b;
         }
     }
