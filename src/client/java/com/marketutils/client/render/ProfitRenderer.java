@@ -143,7 +143,7 @@ public final class ProfitRenderer {
 
                 String afterColon = plain.substring(colon + 1);
 
-                if (isListingPriceLabel(lower)) {
+                if (price == 0L && isListingPriceLabel(lower)) {
                     long parsed = PriceParser.parsePrice(afterColon);
                     if (parsed > 0L) {
                         price = parsed;
@@ -235,7 +235,7 @@ public final class ProfitRenderer {
 
             String afterColon = plain.substring(colon + 1);
 
-            if (isListingPriceLabel(lower)) {
+            if (price == 0L && isListingPriceLabel(lower)) {
                 long parsed = PriceParser.parsePrice(afterColon);
                 if (parsed > 0L) {
                     price = parsed;
@@ -261,13 +261,24 @@ public final class ProfitRenderer {
     /**
      * Matches tooltip lines that contain the auction listing price.
      *
-     * IMPORTANT: These patterns must be specific enough to avoid matching
-     * unrelated lines. For example, "price:" alone is too broad and would
-     * match things like "Upgrade Price:" or item lore containing "price:".
-     * Each pattern includes a prefix keyword that anchors it to known
-     * Hypixel auction formatting.
+     * IMPORTANT: Must exclude SkyHanni info lines that happen to contain
+     * matching substrings. For example, "Lowest BIN Price:" contains
+     * "bin price:" as a substring. "3 Day Avg. Price:" contains "price:".
+     * These are NOT the listing price -- they are supplementary market data
+     * added by SkyHanni. We must reject them before checking for matches.
+     *
+     * The real listing price ("Buy it now:", "Starting bid:", etc.) always
+     * appears near the top of the tooltip, before any SkyHanni additions.
+     * The parsing loop also uses first-match-wins to avoid overwriting.
      */
     private static boolean isListingPriceLabel(String lowerLine) {
+        if (lowerLine.contains("lowest")
+                || lowerLine.contains("avg")
+                || lowerLine.contains("average")
+                || lowerLine.contains("median")) {
+            return false;
+        }
+
         return lowerLine.contains("buy it now:")
                 || lowerLine.contains("starting bid:")
                 || lowerLine.contains("current bid:")

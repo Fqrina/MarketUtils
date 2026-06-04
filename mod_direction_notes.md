@@ -1,6 +1,6 @@
 # MarketUtils -- Mod Direction Notes
 
-Last updated: 3 June 2026 (v1.0.0-rc3)
+Last updated: 4 June 2026 (v1.0.0-rc4)
 
 
 ## What the mod actually does
@@ -83,6 +83,8 @@ PriceParser (utility)
 9. **Callback ordering between mods.** Fabric's `ItemTooltipCallback` fires callbacks in registration order. If SkyHanni registers after MarketUtils, its "Estimated Item Value:" line is not present in the `lines` list when our callback runs. The fix: have the tooltip callback fall back to the slot cache (populated by `renderSlotBackground`, which calls `getTooltipLines()` independently and sees all mods' lines).
 
 10. **Overly broad label matching.** Using `lowerLine.contains("price:")` to find the BIN price also matches unrelated tooltip lines like "Upgrade Price:" or item lore containing the word "price". This caused garbage values to be parsed as the listing price, producing wrong colors (green when it should be red). Each label pattern must include enough prefix context to avoid false matches.
+
+11. **SkyHanni supplementary lines are substring matches.** "Lowest BIN Price:" contains `"bin price:"` as a substring. "3 Day Avg. Price:" contains `"price:"`. When the parser scans ALL tooltip lines top-to-bottom and takes the LAST match, it overwrites the real "Buy it now: 1,385,000,000" with "Lowest BIN Price: 499,000,000". Two fixes applied together: (a) reject lines containing "lowest", "avg", "average", or "median" before matching price labels, and (b) use first-match-wins so the real BIN price (which appears first in the tooltip) is never overwritten by supplementary lines below.
 
 
 ## Compliance
