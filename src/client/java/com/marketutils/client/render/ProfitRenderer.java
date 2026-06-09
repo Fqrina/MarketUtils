@@ -118,7 +118,6 @@ public final class ProfitRenderer {
             return;
         }
 
-        lines.add(Component.literal("\u00A77[MarketUtils] Active"));
 
         long price = 0L;
         long estimatedValue = 0L;
@@ -180,10 +179,6 @@ public final class ProfitRenderer {
             }
             lines.add(Component.literal(text));
 
-            lines.add(Component.literal(String.format(
-                    "\u00A78BIN: %s | Est: %s",
-                    formatNumber(price), formatNumber(estimatedValue)
-            )));
         }
     }
 

@@ -40,3 +40,13 @@ replay_*.log
 *.jfr
 main.log
 crash-*.txt
+
+# dev-only docs (not shipped)
+
+DEV_INTERNALS.md
+
+# screenshots and debug images
+
+*.png
+*.heic
+*.jpg
