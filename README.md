@@ -38,4 +38,4 @@ Copy to your Fabric `mods` folder and launch Minecraft.
 
 ## License
 
-CC0-1.0
+CC BY-NC-SA 4.0 (with Commercial Use & Modpack Policy)
